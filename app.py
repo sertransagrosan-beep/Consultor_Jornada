@@ -54,7 +54,7 @@ def cargar_municipios():
     
     return df_mun
 
-# Cargar municipios (esto es CRÍTICO - estaba faltando)
+# Cargar municipios
 municipios_df = cargar_municipios()
 st.success(f"✅ Cargados {len(municipios_df)} municipios colombianos")
 
@@ -97,7 +97,8 @@ def leer_archivo(file):
         df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
 
         return df
-    except:
+    except Exception as e:
+        st.error(f"Error leyendo archivo: {e}")
         return None
 
 # ==============================
@@ -108,10 +109,15 @@ def parse_coords(coord):
     try:
         # Limpiar la cadena de coordenadas
         coord_str = str(coord).strip()
-        # Reemplazar coma por punto si es necesario
-        coord_str = coord_str.replace(';', ',').replace('|', ',')
-        lat, lon = map(float, coord_str.split(","))
-        return lat, lon
+        # Reemplazar separadores
+        coord_str = coord_str.replace(';', ',').replace('|', ',').replace(' ', ',')
+        # Si tiene múltiples comas, tomar las dos primeras
+        partes = coord_str.split(',')
+        if len(partes) >= 2:
+            lat = float(partes[0].strip())
+            lon = float(partes[1].strip())
+            return lat, lon
+        return np.nan, np.nan
     except:
         return np.nan, np.nan
 
@@ -143,12 +149,11 @@ def clusterizar_ubicaciones(df, radio=300):
 
             if d < radio:
                 total = c["peso"] + row["peso"]
-
-                c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total
-                c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total
+                if total > 0:
+                    c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total
+                    c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total
                 c["peso"] = total
                 c["count"] += 1
-
                 asignado = True
                 break
 
@@ -166,14 +171,20 @@ def obtener_ubic_principal(grupo):
     """Determina la ubicación principal donde más tiempo pasó el vehículo"""
     g = grupo.copy()
     
-    # VERIFICAR: ¿Existe la columna Coordenadas?
-    if "Coordenadas" not in g.columns and "Localización" not in g.columns:
+    # VERIFICAR: ¿Existe la columna de coordenadas?
+    col_coords = None
+    for col in ["Coordenadas", "Localización", "Localizacion", "Ubicación", "ubicacion"]:
+        if col in g.columns:
+            col_coords = col
+            break
+    
+    if col_coords is None:
         return ""
     
-    # Usar la columna que exista
-    col_coords = "Coordenadas" if "Coordenadas" in g.columns else "Localización"
-    
-    g[["lat", "lon"]] = g[col_coords].apply(lambda x: pd.Series(parse_coords(x)))
+    # Parsear coordenadas de forma segura
+    coords_parseadas = g[col_coords].apply(parse_coords)
+    g["lat"] = coords_parseadas.apply(lambda x: x[0])
+    g["lon"] = coords_parseadas.apply(lambda x: x[1])
 
     g["peso"] = g.apply(
         lambda r: r["delta_horas"] * 2 if r["estado"] in ["ralenti", "apagado"]
@@ -208,14 +219,15 @@ if files:
         df_temp = leer_archivo(file)
 
         if df_temp is None or df_temp.empty:
+            st.warning(f"⚠️ No se pudo leer {file.name}")
             continue
 
-        # Renombrar columnas (flexible)
-        columnas_originales = df_temp.columns.tolist()
+        # Mostrar columnas originales para debug
+        st.write(f"📄 {file.name} - Columnas: {list(df_temp.columns)}")
         
-        # Buscar columnas por nombre aproximado
-        for col in columnas_originales:
-            col_lower = col.lower()
+        # Renombrar columnas (flexible)
+        for col in df_temp.columns:
+            col_lower = col.lower().strip()
             if "fecha" in col_lower and "hora" in col_lower:
                 df_temp = df_temp.rename(columns={col: "fecha_hora"})
             elif "velocidad" in col_lower:
@@ -224,7 +236,7 @@ if files:
                 df_temp = df_temp.rename(columns={col: "ignicion"})
             elif "conductor" in col_lower:
                 df_temp = df_temp.rename(columns={col: "conductor"})
-            elif "coordenada" in col_lower or "localizacion" in col_lower or "ubicacion" in col_lower:
+            elif any(x in col_lower for x in ["coordenada", "localizacion", "ubicacion", "gps"]):
                 df_temp = df_temp.rename(columns={col: "Coordenadas"})
 
         df_temp["vehiculo"] = file.name[:6].upper()
@@ -236,7 +248,7 @@ if files:
 
     df = pd.concat(lista_df, ignore_index=True)
 
-    # Mostrar columnas encontradas (debug)
+    # Mostrar columnas encontradas
     with st.expander("🔍 Columnas encontradas en los archivos"):
         st.write(list(df.columns))
 
@@ -244,14 +256,14 @@ if files:
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
     df = df.dropna(subset=["fecha_hora"])
 
-    df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido", "1", "true"])
+    # Procesar ignición (manejar diferentes formatos)
+    df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido", "1", "true", "on", "si"])
 
-    df["velocidad"] = (
-        df["velocidad"].astype(str)
-        .str.replace(",", ".", regex=False)
-        .str.extract(r"(\d+\.?\d*)")[0]
-    )
-
+    # LIMPIEZA DE VELOCIDAD - CORREGIDO
+    # Convertir a string primero, luego limpiar
+    df["velocidad"] = df["velocidad"].astype(str)
+    df["velocidad"] = df["velocidad"].str.replace(",", ".", regex=False)
+    df["velocidad"] = df["velocidad"].str.extract(r"(\d+\.?\d*)")[0]
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
 
     df = df.sort_values(["vehiculo", "fecha_hora"]).reset_index(drop=True)
@@ -279,11 +291,14 @@ if files:
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
     
     # Verificar si existe columna de coordenadas
-    col_coords = "Coordenadas" if "Coordenadas" in df.columns else "Localización" if "Localización" in df.columns else None
+    col_coords = None
+    for col in ["Coordenadas", "Localización", "Localizacion", "Ubicación", "ubicacion"]:
+        if col in df.columns:
+            col_coords = col
+            break
     
     if col_coords is None:
         st.warning("⚠️ No se encontró una columna de coordenadas. Las ubicaciones aparecerán vacías.")
-        # Crear columna dummy
         df["Coordenadas"] = ""
         col_coords = "Coordenadas"
     
@@ -380,11 +395,11 @@ if files:
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
             "numero_paradas": numero_paradas,
-            "horas_trabajo": horas_trabajo,
-            "horas_conduccion": horas_conduccion,
-            "horas_descanso": horas_descanso,
-            "horas_pausa": horas_pausa,
-            "horas_ralenti": horas_ralenti,
+            "horas_trabajo": round(horas_trabajo, 2),
+            "horas_conduccion": round(horas_conduccion, 2),
+            "horas_descanso": round(horas_descanso, 2),
+            "horas_pausa": round(horas_pausa, 2),
+            "horas_ralenti": round(horas_ralenti, 2),
             "ubic_principal": ubic_principal
         })
 
@@ -466,7 +481,7 @@ if files:
     else:
         nombre_archivo = "reporte.xlsx"
     
-    st.download_button("Descargar Excel", data=buffer, file_name=nombre_archivo)
+    st.download_button("📥 Descargar Excel", data=buffer, file_name=nombre_archivo)
 
 else:
-    st.info("📂 Sube archivos para comenzar el análisis")
+    st.info("📂 Sube archivos CSV o Excel para comenzar el análisis")
