@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import re
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Jornada Laboral Conductores", layout="wide")
 st.title("📊 Jornada Laboral Conductores")
@@ -103,7 +104,6 @@ def coord_a_municipio(lat, lon):
     if pd.isna(lat) or pd.isna(lon):
         return ""
 
-    # Cálculo vectorizado del municipio más cercano
     dist = (
         (municipios_df["Latitud"] - lat)**2 +
         (municipios_df["Longitud"] - lon)**2
@@ -146,7 +146,6 @@ def parse_coords(coord):
         if pd.isna(coord) or coord == "":
             return np.nan, np.nan
         coord_str = str(coord).strip()
-        # Reemplazar separadores comunes
         coord_str = coord_str.replace(';', ',').replace('|', ',')
         partes = coord_str.split(',')
         if len(partes) >= 2:
@@ -172,7 +171,7 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     return R * c
 
 # ==============================
-# 🔥 CLUSTERING MEJORADO
+# CLUSTERING MEJORADO
 # ==============================
 
 def clusterizar_ubicaciones(df, radio=300):
@@ -219,7 +218,6 @@ def obtener_ubic_principal(grupo):
     
     g = grupo.copy()
     
-    # Verificar si existe la columna de coordenadas
     col_coords = None
     for col in ["Coordenadas", "Localización", "Localizacion", "Ubicación"]:
         if col in g.columns:
@@ -229,7 +227,6 @@ def obtener_ubic_principal(grupo):
     if col_coords is None:
         return ""
     
-    # Parsear coordenadas
     try:
         coords_parseadas = g[col_coords].apply(parse_coords)
         g["lat"] = coords_parseadas.apply(lambda x: x[0])
@@ -237,14 +234,12 @@ def obtener_ubic_principal(grupo):
     except Exception:
         return ""
 
-    # Calcular pesos
     g["peso"] = g.apply(
         lambda r: max(r["delta_horas"] * 2, 0.1) if r["estado"] in ["ralenti", "apagado"]
         else max(r["delta_horas"] * 0.3, 0.01),
         axis=1
     )
 
-    # Filtrar coordenadas válidas
     g = g.dropna(subset=["lat", "lon"])
     
     if len(g) == 0:
@@ -281,7 +276,6 @@ if files:
             if df_temp is None or df_temp.empty:
                 continue
 
-            # Renombrar columnas
             df_temp = df_temp.rename(columns={
                 "Fecha y Hora": "fecha_hora",
                 "Velocidad": "velocidad",
@@ -318,7 +312,6 @@ if files:
         df = df.sort_values(["vehiculo", "fecha_hora"]).reset_index(drop=True)
         df["fecha"] = df["fecha_hora"].dt.date
 
-        # ESTADOS
         df["estado"] = df.apply(
             lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"] > 0
             else "ralenti" if r["ignicion_on"]
@@ -326,14 +319,12 @@ if files:
             axis=1
         )
 
-        # TIEMPOS
         df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
         df["delta_horas"] = (
             df["fecha_siguiente"] - df["fecha_hora"]
         ).dt.total_seconds() / 3600
         df["delta_horas"] = df["delta_horas"].fillna(0)
 
-        # BLOQUES
         df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
         
         bloques = df.groupby(["vehiculo", "grupo"]).agg({
@@ -356,156 +347,192 @@ if files:
         bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
 
     # ==============================
-    # KPIs - VERSIÓN OPTIMIZADA
+    # KPIs - VERSIÓN CORREGIDA
     # ==============================
 
     kpis_list = []
-
-    with st.spinner("📊 Calculando métricas de jornada..."):
-        for (vehiculo, fecha), grupo in df.groupby(["vehiculo", "fecha"]):
-            try:
-                conductor = grupo["conductor"].dropna().iloc[0] if not grupo["conductor"].dropna().empty else "Desconocido"
+    
+    # Obtener rango completo de fechas
+    todas_fechas = sorted(df["fecha"].unique())
+    
+    # Procesar cada vehículo por separado
+    for vehiculo in df["vehiculo"].unique():
+        df_vehiculo = df[df["vehiculo"] == vehiculo].copy()
+        
+        with st.spinner(f"📊 Procesando vehículo {vehiculo}..."):
+            
+            # Obtener todas las jornadas reales del vehículo
+            jornadas_reales_vehiculo = []
+            
+            # Agrupar por fecha
+            for fecha in todas_fechas:
+                grupo_fecha = df_vehiculo[df_vehiculo["fecha"] == fecha].copy()
                 
-                # ==========================================
-                # PASO 1: Crear intervalos de "jornada potencial"
-                # Basado en cambios de ignición
-                # ==========================================
-                
-                grupo = grupo.sort_values("fecha_hora").reset_index(drop=True)
-                
-                grupo["cambio_ignicion"] = grupo["ignicion_on"].ne(grupo["ignicion_on"].shift())
-                grupo["grupo_ignicion"] = grupo["cambio_ignicion"].cumsum()
-                
-                jornadas_potenciales = []
-                
-                for _, sub_grupo in grupo.groupby("grupo_ignicion"):
-                    estado_ignicion = sub_grupo["ignicion_on"].iloc[0]
-                    
-                    if estado_ignicion:
-                        inicio = sub_grupo["fecha_hora"].min()
-                        fin = sub_grupo["fecha_hora"].max()
-                        
-                        horas_conduccion_real = sub_grupo.loc[
-                            sub_grupo["velocidad"] > 0, "delta_horas"
-                        ].sum()
-                        
-                        jornadas_potenciales.append({
-                            "inicio": inicio,
-                            "fin": fin,
-                            "horas_conduccion": horas_conduccion_real,
-                            "sub_grupo": sub_grupo
-                        })
-                
-                # ==========================================
-                # PASO 2: Filtrar jornadas reales (con conducción efectiva)
-                # ==========================================
-                
-                jornadas_reales = [
-                    j for j in jornadas_potenciales 
-                    if j["horas_conduccion"] >= UMBRAL_CONDUCCION_HORAS
-                ]
-                
-                if not jornadas_reales:
+                if grupo_fecha.empty:
                     continue
                 
-                # ==========================================
-                # PASO 3: Calcular métricas para cada jornada real
-                # ==========================================
+                try:
+                    conductor = grupo_fecha["conductor"].dropna().iloc[0] if not grupo_fecha["conductor"].dropna().empty else "Desconocido"
+                    
+                    grupo_fecha = grupo_fecha.sort_values("fecha_hora").reset_index(drop=True)
+                    
+                    grupo_fecha["cambio_ignicion"] = grupo_fecha["ignicion_on"].ne(grupo_fecha["ignicion_on"].shift())
+                    grupo_fecha["grupo_ignicion"] = grupo_fecha["cambio_ignicion"].cumsum()
+                    
+                    for _, sub_grupo in grupo_fecha.groupby("grupo_ignicion"):
+                        if sub_grupo["ignicion_on"].iloc[0]:
+                            inicio = sub_grupo["fecha_hora"].min()
+                            fin = sub_grupo["fecha_hora"].max()
+                            
+                            horas_conduccion_real = sub_grupo.loc[
+                                sub_grupo["velocidad"] > 0, "delta_horas"
+                            ].sum()
+                            
+                            if horas_conduccion_real >= UMBRAL_CONDUCCION_HORAS:
+                                jornadas_reales_vehiculo.append({
+                                    "conductor": conductor,
+                                    "vehiculo": vehiculo,
+                                    "fecha": fecha,
+                                    "inicio": inicio,
+                                    "fin": fin,
+                                    "horas_conduccion": horas_conduccion_real,
+                                    "sub_grupo": sub_grupo
+                                })
+                except Exception as e:
+                    st.warning(f"Error procesando fecha {fecha}: {e}")
+            
+            # Ordenar jornadas por fecha y hora
+            jornadas_reales_vehiculo.sort(key=lambda x: x["inicio"])
+            
+            # Calcular métricas para cada jornada
+            for idx, jornada in enumerate(jornadas_reales_vehiculo):
+                sub_grupo = jornada["sub_grupo"]
+                inicio_jornada = jornada["inicio"]
+                fin_jornada = jornada["fin"]
+                fecha = jornada["fecha"]
                 
-                for idx, jornada in enumerate(jornadas_reales):
-                    sub_grupo = jornada["sub_grupo"]
-                    inicio_jornada = jornada["inicio"]
-                    fin_jornada = jornada["fin"]
-                    
-                    # Calcular horas de trabajo
-                    horas_trabajo = sub_grupo["delta_horas"].sum()
-                    
-                    # Calcular horas de conducción
-                    horas_conduccion = sub_grupo.loc[
-                        sub_grupo["velocidad"] > 0, "delta_horas"
-                    ].sum()
-                    
-                    # Calcular horas de ralentí
-                    horas_ralenti = sub_grupo.loc[
-                        (sub_grupo["velocidad"] == 0) & (sub_grupo["ignicion_on"]), "delta_horas"
-                    ].sum()
-                    
-                    # Horas de pausa = trabajo - conducción - ralentí
-                    horas_pausa = horas_trabajo - horas_conduccion - horas_ralenti
-                    horas_pausa = max(horas_pausa, 0)
-                    
-                    # ==========================================
-                    # PASO 4: Detectar paradas durante la conducción
-                    # ==========================================
-                    
-                    sub_grupo["velocidad_cero"] = (sub_grupo["velocidad"] == 0)
-                    sub_grupo["cambio_velocidad"] = sub_grupo["velocidad_cero"].ne(
-                        sub_grupo["velocidad_cero"].shift()
-                    )
-                    sub_grupo["grupo_velocidad"] = sub_grupo["cambio_velocidad"].cumsum()
-                    
-                    numero_paradas = 0
-                    for _, vel_grupo in sub_grupo.groupby("grupo_velocidad"):
-                        if vel_grupo["velocidad_cero"].iloc[0]:
-                            duracion = vel_grupo["delta_horas"].sum()
-                            if duracion >= UMBRAL_PARADA_MIN:
-                                numero_paradas += 1
-                    
-                    # ==========================================
-                    # PASO 5: Calcular descanso (solo entre jornadas reales)
-                    # ==========================================
-                    
-                    horas_descanso = 0
-                    
-                    if idx > 0:
-                        fin_anterior = jornadas_reales[idx - 1]["fin"]
-                        horas_descanso = (inicio_jornada - fin_anterior).total_seconds() / 3600
-                        horas_descanso = max(horas_descanso, 0)
-                    
-                    # ==========================================
-                    # PASO 6: Ubicaciones
-                    # ==========================================
-                    
-                    ubicacion = ""
-                    if "Coordenadas" in grupo.columns:
-                        coords_validas = grupo["Coordenadas"].dropna()
-                        if not coords_validas.empty:
-                            lat, lon = parse_coords(coords_validas.iloc[-1])
-                            if not np.isnan(lat):
-                                ubicacion = coord_a_municipio(lat, lon)
-                    
-                    ubic_principal = obtener_ubic_principal(sub_grupo)
-                    
-                    kpis_list.append({
-                        "conductor": conductor,
-                        "vehiculo": vehiculo,
-                        "fecha": fecha,
-                        "origen": "",
-                        "destino": "",
-                        "ubicación": ubicacion,
-                        "ubic_principal": ubic_principal,
-                        "inicio_jornada": inicio_jornada,
-                        "fin_jornada": fin_jornada,
-                        "numero_paradas": numero_paradas,
-                        "horas_trabajo": round(horas_trabajo, 2),
-                        "horas_conduccion": round(horas_conduccion, 2),
-                        "horas_descanso": round(horas_descanso, 2),
-                        "horas_pausa": round(horas_pausa, 2),
-                        "horas_ralenti": round(horas_ralenti, 2)
-                    })
-                    
-            except Exception as e:
-                st.warning(f"Error procesando grupo {vehiculo} - {fecha}: {e}")
+                # Calcular horas
+                horas_trabajo = sub_grupo["delta_horas"].sum()
+                horas_conduccion = jornada["horas_conduccion"]
+                horas_ralenti = sub_grupo.loc[
+                    (sub_grupo["velocidad"] == 0) & (sub_grupo["ignicion_on"]), "delta_horas"
+                ].sum()
+                
+                # CORRECCIÓN: horas_pausa = trabajo - conducción
+                # El ralentí NO es pausa, es parte del trabajo
+                horas_pausa = horas_trabajo - horas_conduccion
+                horas_pausa = max(horas_pausa, 0)
+                
+                # Detectar paradas durante la conducción
+                sub_grupo["velocidad_cero"] = (sub_grupo["velocidad"] == 0)
+                sub_grupo["cambio_velocidad"] = sub_grupo["velocidad_cero"].ne(
+                    sub_grupo["velocidad_cero"].shift()
+                )
+                sub_grupo["grupo_velocidad"] = sub_grupo["cambio_velocidad"].cumsum()
+                
+                numero_paradas = 0
+                for _, vel_grupo in sub_grupo.groupby("grupo_velocidad"):
+                    if vel_grupo["velocidad_cero"].iloc[0]:
+                        duracion = vel_grupo["delta_horas"].sum()
+                        if duracion >= UMBRAL_PARADA_MIN:
+                            numero_paradas += 1
+                
+                # Calcular descanso entre jornadas del MISMO día
+                horas_descanso_dia = 0
+                if idx > 0 and jornadas_reales_vehiculo[idx - 1]["fecha"] == fecha:
+                    fin_anterior = jornadas_reales_vehiculo[idx - 1]["fin"]
+                    horas_descanso_dia = (inicio_jornada - fin_anterior).total_seconds() / 3600
+                    horas_descanso_dia = max(horas_descanso_dia, 0)
+                
+                # Ubicaciones
+                ubicacion = ""
+                if "Coordenadas" in df.columns:
+                    coords_validas = df[df["fecha"] == fecha]["Coordenadas"].dropna()
+                    if not coords_validas.empty:
+                        lat, lon = parse_coords(coords_validas.iloc[-1])
+                        if not np.isnan(lat):
+                            ubicacion = coord_a_municipio(lat, lon)
+                
+                ubic_principal = obtener_ubic_principal(sub_grupo)
+                
+                kpis_list.append({
+                    "conductor": jornada["conductor"],
+                    "vehiculo": vehiculo,
+                    "fecha": fecha,
+                    "origen": "",
+                    "destino": "",
+                    "ubicación": ubicacion,
+                    "ubic_principal": ubic_principal,
+                    "inicio_jornada": inicio_jornada,
+                    "fin_jornada": fin_jornada,
+                    "numero_paradas": numero_paradas,
+                    "horas_trabajo": round(horas_trabajo, 2),
+                    "horas_conduccion": round(horas_conduccion, 2),
+                    "horas_descanso_dia": round(horas_descanso_dia, 2),
+                    "horas_pausa": round(horas_pausa, 2),
+                    "horas_ralenti": round(horas_ralenti, 2)
+                })
+            
+            # ==========================================
+            # NUEVO: Agregar días sin actividad como descanso
+            # ==========================================
+            
+            if len(jornadas_reales_vehiculo) > 0:
+                fechas_con_actividad = set([j["fecha"] for j in jornadas_reales_vehiculo])
+                
+                for fecha in todas_fechas:
+                    if fecha not in fechas_con_actividad:
+                        # Encontrar jornada anterior y siguiente
+                        jornada_anterior = None
+                        jornada_siguiente = None
+                        
+                        for j in jornadas_reales_vehiculo:
+                            if j["fecha"] < fecha:
+                                if jornada_anterior is None or j["fecha"] > jornada_anterior["fecha"]:
+                                    jornada_anterior = j
+                            elif j["fecha"] > fecha:
+                                if jornada_siguiente is None or j["fecha"] < jornada_siguiente["fecha"]:
+                                    jornada_siguiente = j
+                        
+                        if jornada_anterior and jornada_siguiente:
+                            # Hay actividad antes y después, día sin actividad = descanso
+                            horas_descanso = (jornada_siguiente["inicio"] - jornada_anterior["fin"]).total_seconds() / 3600
+                            horas_descanso = max(horas_descanso, 0)
+                            
+                            conductor = jornada_anterior["conductor"]
+                            
+                            kpis_list.append({
+                                "conductor": conductor,
+                                "vehiculo": vehiculo,
+                                "fecha": fecha,
+                                "origen": "",
+                                "destino": "",
+                                "ubicación": "",
+                                "ubic_principal": "",
+                                "inicio_jornada": "",
+                                "fin_jornada": "",
+                                "numero_paradas": 0,
+                                "horas_trabajo": 0,
+                                "horas_conduccion": 0,
+                                "horas_descanso_dia": round(horas_descanso, 2),
+                                "horas_pausa": 0,
+                                "horas_ralenti": 0
+                            })
 
     # Crear DataFrame de KPIs
     kpis = pd.DataFrame(kpis_list).round(2)
 
-    # Formatear horas
+    # Formatear
     if not kpis.empty:
-        kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
-        kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+        # Convertir fechas para ordenamiento
+        kpis["fecha_orden"] = pd.to_datetime(kpis["fecha"])
+        kpis = kpis.sort_values(["vehiculo", "fecha_orden", "inicio_jornada"])
+        kpis = kpis.drop(columns=["fecha_orden"])
         
-        kpis = kpis.sort_values(["fecha", "inicio_jornada"])
+        # Formatear horas de inicio/fin
+        mask_trabajo = kpis["horas_trabajo"] > 0
+        kpis.loc[mask_trabajo, "inicio_jornada"] = pd.to_datetime(kpis.loc[mask_trabajo, "inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+        kpis.loc[mask_trabajo, "fin_jornada"] = pd.to_datetime(kpis.loc[mask_trabajo, "fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
         
         # Mostrar KPIs
         st.subheader("📋 Resumen de Jornadas")
@@ -513,16 +540,18 @@ if files:
         
         # Mostrar estadísticas
         st.subheader("📈 Estadísticas")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("Total jornadas", len(kpis))
+            st.metric("Total jornadas", len(kpis[kpis["horas_trabajo"] > 0]))
         with col2:
-            st.metric("Promedio conducción", f"{kpis['horas_conduccion'].mean():.1f} hrs")
+            st.metric("Días con actividad", len(kpis[kpis["horas_trabajo"] > 0]["fecha"].unique()))
         with col3:
-            st.metric("Promedio trabajo", f"{kpis['horas_trabajo'].mean():.1f} hrs")
+            st.metric("Días totales", len(kpis))
         with col4:
-            st.metric("Total paradas", kpis['numero_paradas'].sum())
+            st.metric("Promedio conducción", f"{kpis[kpis['horas_trabajo'] > 0]['horas_conduccion'].mean():.1f} hrs")
+        with col5:
+            st.metric("Total paradas", kpis["numero_paradas"].sum())
     
     else:
         st.warning("⚠️ No se encontraron jornadas con conducción efectiva")
