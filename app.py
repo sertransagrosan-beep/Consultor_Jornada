@@ -3,37 +3,47 @@ import pandas as pd
 import numpy as np
 import io
 import re
-import os
 from pathlib import Path
 
-# ==============================
-# 📌 CONFIGURACIÓN INICIAL
-# ==============================
-
-st.set_page_config(page_title="Jornada Laboral Conductores", layout="wide")
+st.title("Jornada Laboral Conductores")
 
 # ==============================
-# 🌍 GEO OFFLINE - CARGAR MUNICIPIOS
+# CONFIGURACIÓN
+# ==============================
+
+HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
+HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
+
+MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=34)
+MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=17)
+
+HORAS_MIN_PAUSA = MIN_PAUSA / 60
+UMBRAL_PARADA_MIN = MIN_PARADA / 60
+
+# ==============================
+# 🌍 GEO OFFLINE (CON ARCHIVO CSV)
 # ==============================
 
 @st.cache_data
 def cargar_municipios():
-    """Carga y valida el archivo de municipios de Colombia"""
-    archivo_municipios = Path("municipios_colombia.csv")
+    """Carga el archivo de municipios de Colombia"""
+    archivo = Path("municipios_colombia.csv")
     
-    if not archivo_municipios.exists():
-        st.error(f"❌ No se encuentra el archivo {archivo_municipios}")
+    if not archivo.exists():
+        st.error(f"❌ No se encuentra el archivo {archivo}")
+        st.info("📌 Asegúrate de tener el archivo 'municipios_colombia.csv' en el mismo directorio")
         st.stop()
     
-    df_mun = pd.read_csv(archivo_municipios)
+    df_mun = pd.read_csv(archivo)
     
-    # Validar columnas necesarias
+    # Verificar columnas necesarias
     columnas_requeridas = ["Latitud", "Longitud", "Municipio", "Departamento"]
     for col in columnas_requeridas:
         if col not in df_mun.columns:
             st.error(f"❌ El archivo de municipios debe tener la columna '{col}'")
             st.stop()
     
+    # Convertir a numérico y limpiar
     df_mun["Latitud"] = pd.to_numeric(df_mun["Latitud"], errors="coerce")
     df_mun["Longitud"] = pd.to_numeric(df_mun["Longitud"], errors="coerce")
     df_mun = df_mun.dropna(subset=["Latitud", "Longitud"])
@@ -44,171 +54,17 @@ def cargar_municipios():
     
     return df_mun
 
-# Cargar municipios
+# Cargar municipios (esto es CRÍTICO - estaba faltando)
 municipios_df = cargar_municipios()
+st.success(f"✅ Cargados {len(municipios_df)} municipios colombianos")
 
 # ==============================
-# 🎨 INTERFAZ DE USUARIO
+# 📍 FUNCIÓN DE GEOCODIFICACIÓN OFFLINE
 # ==============================
-
-st.title("🚛 Jornada Laboral Conductores")
-st.markdown("---")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    HORAS_MAX_JORNADA = st.number_input("⏰ Horas máximas jornada", value=8.0, min_value=1.0, max_value=24.0, step=0.5)
-    MIN_PAUSA = st.number_input("☕ Pausa mínima (minutos)", value=34, min_value=1, max_value=120, step=5)
-    HORAS_MIN_PAUSA = MIN_PAUSA / 60
-
-with col2:
-    HORAS_DESCANSO_LARGO = st.number_input("🌙 Horas descanso largo", value=4.0, min_value=1.0, max_value=12.0, step=0.5)
-    MIN_PARADA = st.number_input("🚏 Duración mínima parada (minutos)", value=17, min_value=1, max_value=60, step=5)
-    UMBRAL_PARADA_MIN = MIN_PARADA / 60
-
-st.markdown("---")
-
-# ==============================
-# 📂 LECTOR INTELIGENTE DE ARCHIVOS
-# ==============================
-
-def detectar_columna_coordenadas(df):
-    """Detecta automáticamente la columna que contiene coordenadas"""
-    # Posibles nombres de columna para coordenadas
-    posibles_nombres = [
-        'Localización', 'Localizacion', 'localización', 'localizacion',
-        'Coordenadas', 'coordenadas', 'Ubicación', 'ubicación', 
-        'Ubicacion', 'ubicacion', 'GPS', 'Gps', 'gps',
-        'Latitud/Longitud', 'lat_lon', 'LatLon'
-    ]
-    
-    # Buscar coincidencias exactas o parciales
-    for col in df.columns:
-        col_limpio = col.strip()
-        if col_limpio in posibles_nombres:
-            return col_limpio
-        # Buscar coincidencia parcial (ignorando mayúsculas)
-        for nombre in posibles_nombres:
-            if nombre.lower() in col_limpio.lower():
-                return col_limpio
-    
-    # Si no encuentra, buscar cualquier columna que pueda contener coordenadas
-    for col in df.columns:
-        # Revisar primeras filas no nulas
-        muestra = df[col].dropna()
-        if len(muestra) > 0:
-            primer_valor = str(muestra.iloc[0])
-            # Si tiene formato de coordenadas (número, número)
-            if ',' in primer_valor and any(c.isdigit() for c in primer_valor):
-                if st.sidebar.checkbox(f"¿Usar '{col}' como coordenadas?", value=True):
-                    return col
-    
-    return None
-
-@st.cache_data
-def leer_archivo(file):
-    """Lee archivos CSV o Excel con detección automática de formato"""
-    try:
-        if file.name.endswith(".xlsx"):
-            df = pd.read_excel(file)
-        else:
-            # Intentar diferentes separadores y codificaciones
-            for sep, encoding in [(";", "utf-8"), (",", "utf-8"), (";", "latin1"), (",", "latin1")]:
-                try:
-                    file.seek(0)
-                    df = pd.read_csv(file, sep=sep, encoding=encoding)
-                    if len(df.columns) > 1:
-                        break
-                except:
-                    continue
-            else:
-                return None
-        
-        # Limpiar nombres de columnas
-        df.columns = df.columns.astype(str).str.strip().str.replace('"', '')
-        df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
-        
-        # DEBUG: Mostrar columnas encontradas
-        st.sidebar.write(f"📁 {file.name} - Columnas: {list(df.columns)}")
-        
-        # Detectar columna de coordenadas
-        col_coordenadas = detectar_columna_coordenadas(df)
-        
-        if col_coordenadas:
-            # Renombrar a 'Localización' estándar
-            df = df.rename(columns={col_coordenadas: "Localización"})
-            st.sidebar.success(f"✅ {file.name}: Usando columna '{col_coordenadas}' como coordenadas")
-        else:
-            st.sidebar.warning(f"⚠️ {file.name}: No se encontró columna de coordenadas")
-            # Crear columna vacía
-            df["Localización"] = ""
-        
-        return df if not df.empty else None
-    
-    except Exception as e:
-        st.sidebar.error(f"Error en {file.name}: {e}")
-        return None
-
-# ==============================
-# 📍 FUNCIONES GEOGRÁFICAS
-# ==============================
-
-def parse_coords(coord):
-    """Parsea coordenadas del formato 'lat, lon' con múltiples variaciones"""
-    if pd.isna(coord) or coord == "" or coord is None:
-        return np.nan, np.nan
-    
-    try:
-        # Limpiar la cadena
-        coord_str = str(coord).strip().replace('"', '').replace("'", "")
-        
-        # Reemplazar separadores comunes
-        coord_str = coord_str.replace(';', ',').replace('|', ',')
-        
-        # Manejar formato con grados (ej: "4.60971, -74.08175")
-        # Buscar patrón de números con decimales separados por coma
-        patron = r'(-?\d+\.?\d*)\s*[,;]\s*(-?\d+\.?\d*)'
-        match = re.search(patron, coord_str)
-        
-        if match:
-            lat = float(match.group(1))
-            lon = float(match.group(2))
-            
-            # Validar rangos aproximados (Colombia está entre -4 a 13 lat, -80 a -66 lon)
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                return lat, lon
-        
-        # Intentar split simple
-        if ',' in coord_str:
-            partes = coord_str.split(',')
-            if len(partes) >= 2:
-                lat = float(partes[0].strip())
-                lon = float(partes[1].strip())
-                return lat, lon
-                
-    except Exception as e:
-        print(f"Error parseando '{coord}': {e}")
-    
-    return np.nan, np.nan
-
-def distancia_metros(lat1, lon1, lat2, lon2):
-    """Calcula distancia en metros usando fórmula de Haversine"""
-    if np.isnan(lat1) or np.isnan(lat2):
-        return float('inf')
-    
-    R = 6371000
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlambda = np.radians(lon2 - lon1)
-    
-    a = np.sin(dphi/2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda/2)**2
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    
-    return R * c
 
 def coord_a_municipio(lat, lon):
-    """Convierte coordenadas a nombre de municipio y departamento"""
-    if np.isnan(lat) or np.isnan(lon):
+    """Convierte coordenadas a municipio usando archivo local"""
+    if pd.isna(lat) or pd.isna(lon):
         return ""
     
     # Cálculo vectorizado del municipio más cercano
@@ -223,36 +79,79 @@ def coord_a_municipio(lat, lon):
     return f"{row['Municipio']}, {row['Departamento']}"
 
 # ==============================
+# LECTOR INTELIGENTE
+# ==============================
+
+def leer_archivo(file):
+    try:
+        if file.name.endswith(".xlsx"):
+            df = pd.read_excel(file)
+        else:
+            try:
+                df = pd.read_csv(file, sep=";", encoding="utf-8")
+            except:
+                file.seek(0)
+                df = pd.read_csv(file, sep=None, engine="python")
+
+        df.columns = df.columns.astype(str).str.strip()
+        df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
+
+        return df
+    except:
+        return None
+
+# ==============================
+# GEO AUX
+# ==============================
+
+def parse_coords(coord):
+    try:
+        # Limpiar la cadena de coordenadas
+        coord_str = str(coord).strip()
+        # Reemplazar coma por punto si es necesario
+        coord_str = coord_str.replace(';', ',').replace('|', ',')
+        lat, lon = map(float, coord_str.split(","))
+        return lat, lon
+    except:
+        return np.nan, np.nan
+
+def distancia_metros(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+
+    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
+    return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+
+# ==============================
 # 🔥 CLUSTERING MEJORADO
 # ==============================
 
 def clusterizar_ubicaciones(df, radio=300):
-    """Agrupa ubicaciones cercanas usando clustering por proximidad"""
-    if df.empty:
-        return []
-    
     clusters = []
-    
+
     for _, row in df.iterrows():
         lat, lon = row["lat"], row["lon"]
         if np.isnan(lat):
             continue
-        
+
         asignado = False
-        
+
         for c in clusters:
             d = distancia_metros(lat, lon, c["lat"], c["lon"])
-            
+
             if d < radio:
-                total_peso = c["peso"] + row["peso"]
-                if total_peso > 0:
-                    c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total_peso
-                    c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total_peso
-                c["peso"] = total_peso
+                total = c["peso"] + row["peso"]
+
+                c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total
+                c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total
+                c["peso"] = total
                 c["count"] += 1
+
                 asignado = True
                 break
-        
+
         if not asignado:
             clusters.append({
                 "lat": lat,
@@ -260,189 +159,164 @@ def clusterizar_ubicaciones(df, radio=300):
                 "peso": row["peso"],
                 "count": 1
             })
-    
+
     return clusters
 
 def obtener_ubic_principal(grupo):
-    """Determina la ubicación principal de un grupo de registros"""
-    if grupo.empty:
+    """Determina la ubicación principal donde más tiempo pasó el vehículo"""
+    g = grupo.copy()
+    
+    # VERIFICAR: ¿Existe la columna Coordenadas?
+    if "Coordenadas" not in g.columns and "Localización" not in g.columns:
         return ""
     
-    # Verificar si existe columna Localización
-    if "Localización" not in grupo.columns:
-        return ""
+    # Usar la columna que exista
+    col_coords = "Coordenadas" if "Coordenadas" in g.columns else "Localización"
     
-    # Parsear coordenadas
-    coords_parseadas = grupo["Localización"].apply(parse_coords)
-    grupo_copy = grupo.copy()
-    grupo_copy["lat"] = coords_parseadas.str[0]
-    grupo_copy["lon"] = coords_parseadas.str[1]
-    
-    # Calcular pesos
-    grupo_copy["peso"] = np.where(
-        grupo_copy["estado"].isin(["ralenti", "apagado"]),
-        grupo_copy["delta_horas"] * 2,
-        grupo_copy["delta_horas"] * 0.3
+    g[["lat", "lon"]] = g[col_coords].apply(lambda x: pd.Series(parse_coords(x)))
+
+    g["peso"] = g.apply(
+        lambda r: r["delta_horas"] * 2 if r["estado"] in ["ralenti", "apagado"]
+        else r["delta_horas"] * 0.3,
+        axis=1
     )
-    
-    # Filtrar coordenadas válidas
-    grupo_valid = grupo_copy.dropna(subset=["lat", "lon"])
-    
-    if grupo_valid.empty:
+
+    g = g.dropna(subset=["lat"])
+
+    if len(g) == 0:
         return ""
-    
-    # DEBUG: Mostrar cuántas coordenadas válidas hay
-    # st.sidebar.write(f"Coordenadas válidas: {len(grupo_valid)} de {len(grupo)}")
-    
-    # Clustering
-    clusters = clusterizar_ubicaciones(grupo_valid)
-    
-    if not clusters:
+
+    clusters = clusterizar_ubicaciones(g)
+
+    if len(clusters) == 0:
         return ""
-    
-    # Seleccionar el cluster con mayor peso
+
     mejor = max(clusters, key=lambda x: x["peso"])
-    
+
     return coord_a_municipio(mejor["lat"], mejor["lon"])
 
 # ==============================
-# 📤 SUBIR ARCHIVOS
+# SUBIR ARCHIVOS
 # ==============================
 
-files = st.file_uploader(
-    "📁 Sube archivos de seguimiento (CSV o Excel)",
-    accept_multiple_files=True,
-    type=['csv', 'xlsx']
-)
+files = st.file_uploader("Sube archivos", accept_multiple_files=True)
 
-if not files:
-    st.info("👆 Sube uno o más archivos para comenzar el análisis")
-    st.stop()
-
-# ==============================
-# 🔄 PROCESAMIENTO DE DATOS
-# ==============================
-
-with st.spinner("🔄 Procesando archivos..."):
+if files:
     lista_df = []
-    
+
     for file in files:
         df_temp = leer_archivo(file)
-        
+
         if df_temp is None or df_temp.empty:
-            st.warning(f"⚠️ No se pudo leer el archivo: {file.name}")
             continue
+
+        # Renombrar columnas (flexible)
+        columnas_originales = df_temp.columns.tolist()
         
-        # Renombrar columnas necesarias
-        mapeo_columnas = {
-            "Fecha y Hora": "fecha_hora",
-            "Velocidad": "velocidad",
-            "Ignicion*": "ignicion",
-            "Conductor": "conductor"
-        }
-        
-        for old, new in mapeo_columnas.items():
-            if old in df_temp.columns:
-                df_temp = df_temp.rename(columns={old: new})
-        
-        # Verificar columnas esenciales
-        columnas_necesarias = ["fecha_hora", "velocidad", "ignicion"]
-        for col in columnas_necesarias:
-            if col not in df_temp.columns:
-                st.error(f"❌ El archivo {file.name} no tiene la columna '{col}'")
-                st.stop()
-        
+        # Buscar columnas por nombre aproximado
+        for col in columnas_originales:
+            col_lower = col.lower()
+            if "fecha" in col_lower and "hora" in col_lower:
+                df_temp = df_temp.rename(columns={col: "fecha_hora"})
+            elif "velocidad" in col_lower:
+                df_temp = df_temp.rename(columns={col: "velocidad"})
+            elif "ignicion" in col_lower or "ignición" in col_lower:
+                df_temp = df_temp.rename(columns={col: "ignicion"})
+            elif "conductor" in col_lower:
+                df_temp = df_temp.rename(columns={col: "conductor"})
+            elif "coordenada" in col_lower or "localizacion" in col_lower or "ubicacion" in col_lower:
+                df_temp = df_temp.rename(columns={col: "Coordenadas"})
+
         df_temp["vehiculo"] = file.name[:6].upper()
         lista_df.append(df_temp)
-    
+
     if len(lista_df) == 0:
-        st.error("❌ No hay datos válidos para procesar")
+        st.error("No hay datos válidos")
         st.stop()
-    
+
     df = pd.concat(lista_df, ignore_index=True)
 
-# ==============================
-# 🧹 LIMPIEZA DE DATOS
-# ==============================
+    # Mostrar columnas encontradas (debug)
+    with st.expander("🔍 Columnas encontradas en los archivos"):
+        st.write(list(df.columns))
 
-with st.spinner("🧹 Limpiando datos..."):
-    # Convertir fecha/hora
+    # LIMPIEZA
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
     df = df.dropna(subset=["fecha_hora"])
-    
-    if df.empty:
-        st.error("❌ No hay fechas/horas válidas en los datos")
-        st.stop()
-    
-    # Procesar ignición
-    df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido", "1", "true", "on"])
-    
-    # Limpiar velocidad
-    df["velocidad"] = (df["velocidad"].astype(str)
-                       .str.replace(",", ".", regex=False)
-                       .str.extract(r"(\d+\.?\d*)")[0])
+
+    df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido", "1", "true"])
+
+    df["velocidad"] = (
+        df["velocidad"].astype(str)
+        .str.replace(",", ".", regex=False)
+        .str.extract(r"(\d+\.?\d*)")[0]
+    )
+
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
-    
-    # Ordenar
+
     df = df.sort_values(["vehiculo", "fecha_hora"]).reset_index(drop=True)
-    
-    # Extraer fecha
+
     df["fecha"] = df["fecha_hora"].dt.date
 
-# ==============================
-# 🚦 ASIGNACIÓN DE ESTADOS
-# ==============================
-
-with st.spinner("📊 Analizando estados de operación..."):
-    df["estado"] = np.select(
-        [
-            df["ignicion_on"] & (df["velocidad"] > 0),
-            df["ignicion_on"] & (df["velocidad"] == 0),
-            ~df["ignicion_on"]
-        ],
-        ["conduciendo", "ralenti", "apagado"],
-        default="desconocido"
+    # ESTADOS
+    df["estado"] = df.apply(
+        lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"] > 0
+        else "ralenti" if r["ignicion_on"]
+        else "apagado",
+        axis=1
     )
-    
-    # Calcular diferencias de tiempo
+
+    # TIEMPOS
     df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
-    df["delta_horas"] = (df["fecha_siguiente"] - df["fecha_hora"]).dt.total_seconds() / 3600
+
+    df["delta_horas"] = (
+        df["fecha_siguiente"] - df["fecha_hora"]
+    ).dt.total_seconds() / 3600
+
     df["delta_horas"] = df["delta_horas"].fillna(0)
-    df["delta_horas"] = df["delta_horas"].clip(upper=24)
 
-# ==============================
-# 🧱 CREACIÓN DE BLOQUES
-# ==============================
-
-with st.spinner("🔨 Construyendo bloques de actividad..."):
-    # Identificar cambios de estado
+    # BLOQUES
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
     
-    # Agrupar bloques
+    # Verificar si existe columna de coordenadas
+    col_coords = "Coordenadas" if "Coordenadas" in df.columns else "Localización" if "Localización" in df.columns else None
+    
+    if col_coords is None:
+        st.warning("⚠️ No se encontró una columna de coordenadas. Las ubicaciones aparecerán vacías.")
+        # Crear columna dummy
+        df["Coordenadas"] = ""
+        col_coords = "Coordenadas"
+    
     bloques = df.groupby(["vehiculo", "grupo"]).agg({
         "estado": "first",
         "fecha_hora": ["min", "max"],
         "delta_horas": "sum",
-        "Localización": ["first", "last"]
+        col_coords: ["first", "last"]
     })
     
-    bloques.columns = ["estado", "inicio", "fin", "duracion_horas", "inicio_ubica", "fin_ubica"]
+    bloques.columns = [
+        "estado",
+        "inicio",
+        "fin",
+        "duracion_horas",
+        "inicio_ubica",
+        "fin_ubica"
+    ]
+    
     bloques = bloques.reset_index()
     bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
-
-# ==============================
-# 📈 CÁLCULO DE KPIs
-# ==============================
-
-with st.spinner("📈 Calculando indicadores..."):
-    kpis_list = []
     
+    # ==============================
+    # KPIs
+    # ==============================
+
+    kpis_list = []
+
     for (vehiculo, fecha), grupo in df.groupby(["vehiculo", "fecha"]):
-        # Obtener conductor
-        conductor = grupo["conductor"].mode()
+        conductor = grupo["conductor"].dropna()
         conductor_nombre = conductor.iloc[0] if not conductor.empty else "Desconocido"
-        
-        # Horarios de jornada
+
+        # Filtrar datos con ignición encendida
         datos_ignicion = grupo[grupo["ignicion_on"]]
         if not datos_ignicion.empty:
             inicio_jornada = datos_ignicion["fecha_hora"].min()
@@ -450,48 +324,52 @@ with st.spinner("📈 Calculando indicadores..."):
         else:
             inicio_jornada = grupo["fecha_hora"].min()
             fin_jornada = grupo["fecha_hora"].max()
-        
-        # Sumar tiempos
+
         horas_conduccion = grupo.loc[grupo["estado"] == "conduciendo", "delta_horas"].sum()
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
-        
-        # Ubicación final (última coordenada válida)
+
+        # Ubicación final
         ubicacion = ""
-        if "Localización" in grupo.columns:
-            ultima_ubicacion = grupo["Localización"].dropna()
-            if not ultima_ubicacion.empty:
-                for coord in reversed(ultima_ubicacion):
-                    lat, lon = parse_coords(coord)
-                    if not np.isnan(lat):
-                        ubicacion = coord_a_municipio(lat, lon)
-                        break
-        
+        if col_coords in grupo.columns:
+            coords_validas = grupo[col_coords].dropna()
+            if not coords_validas.empty:
+                lat, lon = parse_coords(coords_validas.iloc[-1])
+                if not np.isnan(lat):
+                    ubicacion = coord_a_municipio(lat, lon)
+
         # Ubicación principal
         ubic_principal = obtener_ubic_principal(grupo)
-        
-        # Análisis de paradas
+
+        # BLOQUES REALES
+        bloques_v = bloques[bloques["vehiculo"] == vehiculo]
+
         numero_paradas = 0
         horas_descanso = 0
         horas_pausa = 0
-        
-        bloques_fecha = bloques[
-            (bloques["vehiculo"] == vehiculo) &
-            (bloques["inicio"].dt.date == fecha)
-        ]
-        
-        for _, b in bloques_fecha.iterrows():
-            horas = b["duracion_horas"]
-            
-            if b["estado"] in ["ralenti", "apagado"] and horas >= UMBRAL_PARADA_MIN:
-                numero_paradas += 1
-            
-            if b["estado"] == "apagado":
-                if horas >= HORAS_DESCANSO_LARGO:
-                    horas_descanso += horas
-                elif horas >= HORAS_MIN_PAUSA:
-                    horas_pausa += horas
-        
+
+        for _, b in bloques_v.iterrows():
+            inicio = b["inicio"]
+            fin = b["fin"]
+
+            inicio_dia = pd.Timestamp(fecha)
+            fin_dia = inicio_dia + pd.Timedelta(days=1)
+
+            inicio_real = max(inicio, inicio_dia)
+            fin_real = min(fin, fin_dia)
+
+            if inicio_real < fin_real:
+                horas = (fin_real - inicio_real).total_seconds() / 3600
+
+                if b["estado"] in ["ralenti", "apagado"] and horas >= UMBRAL_PARADA_MIN:
+                    numero_paradas += 1
+
+                if b["estado"] == "apagado":
+                    if horas >= HORAS_DESCANSO_LARGO:
+                        horas_descanso += horas
+                    elif horas >= HORAS_MIN_PAUSA:
+                        horas_pausa += horas
+
         kpis_list.append({
             "conductor": conductor_nombre,
             "vehiculo": vehiculo,
@@ -502,81 +380,93 @@ with st.spinner("📈 Calculando indicadores..."):
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
             "numero_paradas": numero_paradas,
-            "horas_trabajo": round(horas_trabajo, 2),
-            "horas_conduccion": round(horas_conduccion, 2),
-            "horas_descanso": round(horas_descanso, 2),
-            "horas_pausa": round(horas_pausa, 2),
-            "horas_ralenti": round(horas_ralenti, 2),
+            "horas_trabajo": horas_trabajo,
+            "horas_conduccion": horas_conduccion,
+            "horas_descanso": horas_descanso,
+            "horas_pausa": horas_pausa,
+            "horas_ralenti": horas_ralenti,
             "ubic_principal": ubic_principal
         })
+
+    kpis = pd.DataFrame(kpis_list).round(2)
+
+    if not kpis.empty:
+        kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+        kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+
+    st.dataframe(kpis)
+
+    # ==============================
+    # EXPORTAR
+    # ==============================
     
-    kpis = pd.DataFrame(kpis_list)
+    buffer = io.BytesIO()
     
-    if kpis.empty:
-        st.error("❌ No se pudieron calcular KPIs")
-        st.stop()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        kpis.to_excel(writer, sheet_name="Resumen", index=False)
+        bloques.to_excel(writer, sheet_name="Bloques", index=False)
     
-    # Formatear horas
-    kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
-    kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
-
-# ==============================
-# 📊 VISUALIZACIÓN
-# ==============================
-
-st.success(f"✅ Procesados {len(files)} archivos - {len(kpis)} jornadas analizadas")
-
-# Mostrar estadísticas de coordenadas
-if "ubicación" in kpis.columns:
-    coordenadas_validas = kpis[kpis["ubicación"] != ""].shape[0]
-    st.info(f"📍 Ubicaciones encontradas: {coordenadas_validas} de {len(kpis)} jornadas ({coordenadas_validas/len(kpis)*100:.1f}%)")
-
-st.markdown("---")
-
-# Mostrar KPIs
-st.subheader("📋 Resumen de Jornadas")
-
-column_config = {
-    "conductor": "Conductor",
-    "vehiculo": "Vehículo",
-    "fecha": "Fecha",
-    "ubicación": "Ubicación Final",
-    "ubic_principal": "Ubicación Principal",
-    "horas_trabajo": st.column_config.NumberColumn("Horas Trabajo", format="%.2f h"),
-    "horas_conduccion": st.column_config.NumberColumn("Horas Conducción", format="%.2f h"),
-    "horas_ralenti": st.column_config.NumberColumn("Horas Ralentí", format="%.2f h"),
-    "horas_descanso": st.column_config.NumberColumn("Horas Descanso", format="%.2f h"),
-    "horas_pausa": st.column_config.NumberColumn("Horas Pausa", format="%.2f h"),
-    "numero_paradas": "N° Paradas",
-}
-
-st.dataframe(kpis, use_container_width=True, column_config=column_config)
-
-# Alertas
-jornadas_extensas = kpis[kpis["horas_trabajo"] > HORAS_MAX_JORNADA]
-if not jornadas_extensas.empty:
-    st.warning(f"⚠️ {len(jornadas_extensas)} jornada(s) superan el límite de {HORAS_MAX_JORNADA} horas")
-
-# Debug info en expander
-with st.expander("🔧 Información de depuración"):
-    st.write("### Columnas en el archivo original:")
-    if 'df' in locals():
-        st.write(list(df.columns))
+        # Autoajuste de columnas
+        ws_resumen = writer.book["Resumen"]
+        ws_bloques = writer.book["Bloques"]
     
-    st.write("### Muestra de coordenadas:")
-    if 'df' in locals() and "Localización" in df.columns:
-        muestra_coords = df["Localización"].dropna().head(10)
-        for i, coord in enumerate(muestra_coords):
-            lat, lon = parse_coords(coord)
-            st.write(f"{i+1}. Original: '{coord}' → Parseado: ({lat}, {lon})")
+        def auto_ajustar(ws):
+            for col in ws.columns:
+                max_length = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
+    
+        auto_ajustar(ws_resumen)
+        auto_ajustar(ws_bloques)
+    
+    buffer.seek(0)
+   
+    # ==============================
+    # NOMBRE ARCHIVO
+    # ==============================
+    
+    def limpiar_texto(txt):
+        txt = str(txt).strip()
+        txt = " ".join(txt.split())
+        txt = re.sub(r'[\\/*?:"<>|]', "", txt)
+        return txt
+    
+    if not kpis.empty:
+        conductores = kpis["conductor"].dropna().unique()
+        if len(conductores) == 1:
+            conductor_nombre = limpiar_texto(conductores[0])
+        else:
+            conductor_nombre = "MULTIPLE_CONDUCTOR"
+    
+        vehiculos = kpis["vehiculo"].dropna().unique()
+        vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
+    
+        fechas = pd.to_datetime(kpis["fecha"])
+        fecha_min = fechas.min()
+        fecha_max = fechas.max()
+    
+        meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+                 5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+                 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+    
+        mes_nombre = meses[fecha_min.month]
+    
+        if fecha_min == fecha_max:
+            fecha_str = mes_nombre
+        else:
+            fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
+    
+        if vehiculo:
+            nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
+        else:
+            nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
     else:
-        st.warning("No se encontró la columna 'Localización' en los datos")
+        nombre_archivo = "reporte.xlsx"
+    
+    st.download_button("Descargar Excel", data=buffer, file_name=nombre_archivo)
 
-# ==============================
-# 💾 EXPORTAR A EXCEL (igual que antes)
-# ==============================
-
-# ... (código de exportación igual al anterior)
-
-st.markdown("---")
-st.info("💡 **Nota:** Si las ubicaciones siguen vacías, revisa la sección 'Información de depuración' para ver cómo se están parseando las coordenadas")
+else:
+    st.info("📂 Sube archivos para comenzar el análisis")
