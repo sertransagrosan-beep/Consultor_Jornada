@@ -452,7 +452,6 @@ if files:
                     "origen": "",
                     "destino": "",
                     "ubicación": ubicacion,
-                    "ubic_principal": ubic_principal,
                     "inicio_jornada": inicio,
                     "fin_jornada": fin,
                     "numero_paradas": numero_paradas,
@@ -460,7 +459,8 @@ if files:
                     "horas_conduccion": round(horas_conduccion, 2),
                     "horas_descanso": round(horas_descanso, 2),
                     "horas_pausa": round(horas_pausa, 2),
-                    "horas_ralenti": round(horas_ralenti, 2)
+                    "horas_ralenti": round(horas_ralenti, 2),
+                    "ubic_principal": ubic_principal
                 })
 
     # Crear DataFrame de KPIs
