@@ -7,6 +7,12 @@ import re
 st.set_page_config(page_title="Jornada Laboral Conductores", layout="wide")
 st.title("📊 Jornada Laboral Conductores")
 
+def limpiar_texto(txt):
+            txt = str(txt).strip()
+            txt = " ".join(txt.split())
+            txt = re.sub(r'[\\/*?:"<>|]', "", txt)
+            return txt
+
 # ==============================
 # CONFIGURACIÓN CON SLIDERS
 # ==============================
@@ -676,12 +682,6 @@ if files:
         # ==============================
         # NOMBRE ARCHIVO
         # ==============================
-        
-        def limpiar_texto(txt):
-            txt = str(txt).strip()
-            txt = " ".join(txt.split())
-            txt = re.sub(r'[\\/*?:"<>|]', "", txt)
-            return txt
         
         if not kpis.empty:
             conductores = kpis["conductor"].dropna().unique()
