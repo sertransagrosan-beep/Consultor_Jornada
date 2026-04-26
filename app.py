@@ -347,98 +347,93 @@ if files:
         bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
 
         # ==============================
-    # KPIs - VERSIÓN CORREGIDA (UNA FILA POR DÍA)
-    # ==============================
-
-    kpis_list = []
-    
-    # Obtener todas las fechas del período
-    todas_fechas = sorted(df["fecha"].unique())
-    
-    # Procesar cada vehículo por separado
-    for vehiculo in df["vehiculo"].unique():
-        df_vehiculo = df[df["vehiculo"] == vehiculo].copy()
+        # KPIs - VERSION OPTIMIZADA PRO
+        # ==============================
         
-        with st.spinner(f"📊 Procesando vehículo {vehiculo}..."):
-            
-            # Procesar cada fecha (DÍA) como una sola jornada
+        kpis_list = []
+        
+        todas_fechas = sorted(df["fecha"].unique())
+        
+        for vehiculo in df["vehiculo"].unique():
+            df_vehiculo = df[df["vehiculo"] == vehiculo].copy()
+        
             for fecha in todas_fechas:
                 grupo_fecha = df_vehiculo[df_vehiculo["fecha"] == fecha].copy()
-                
+        
                 if grupo_fecha.empty:
-                    # Día sin datos - no agregamos nada (solo si hay datos antes y después)
                     continue
-                
+        
                 try:
                     conductor = grupo_fecha["conductor"].dropna().iloc[0] if not grupo_fecha["conductor"].dropna().empty else "Desconocido"
-                    
-                    # ==========================================
-                    # DATOS DEL DÍA COMPLETO
-                    # ==========================================
-                    
-                    # Inicio y fin del día (primer y último registro con ignición ON)
+        
                     df_encendido = grupo_fecha[grupo_fecha["ignicion_on"]]
-                    
+        
                     if df_encendido.empty:
-                        # No hubo ignición ON en todo el día
                         continue
-                    
+        
                     inicio_jornada = df_encendido["fecha_hora"].min()
                     fin_jornada = df_encendido["fecha_hora"].max()
-                    
-                    # Calcular horas del día completo
-                    horas_trabajo_dia = grupo_fecha[grupo_fecha["ignicion_on"]]["delta_horas"].sum()
-                    horas_conduccion_dia = grupo_fecha.loc[
-                        (grupo_fecha["velocidad"] > 0) & (grupo_fecha["ignicion_on"]), "delta_horas"
+        
+                    # ==========================
+                    # TIEMPOS BASE
+                    # ==========================
+        
+                    horas_conduccion = grupo_fecha.loc[
+                        (grupo_fecha["estado"] == "conduciendo"), "delta_horas"
                     ].sum()
-                    horas_ralenti_dia = grupo_fecha.loc[
-                        (grupo_fecha["velocidad"] == 0) & (grupo_fecha["ignicion_on"]), "delta_horas"
+        
+                    horas_ralenti = grupo_fecha.loc[
+                        (grupo_fecha["estado"] == "ralenti"), "delta_horas"
                     ].sum()
-                    
-                    # Horas de pausa = trabajo - conducción
-                    horas_pausa_dia = horas_trabajo_dia - horas_conduccion_dia
-                    horas_pausa_dia = max(horas_pausa_dia, 0)
-                    
-                    # ==========================================
-                    # CONTAR PARADAS DEL DÍA (múltiples jornadas)
-                    # ==========================================
-                    
-                    # Identificar TODOS los periodos de velocidad cero durante ignición ON
+        
+                    horas_trabajo = horas_conduccion + horas_ralenti
+        
+                    # ==========================
+                    # PARADAS + PAUSAS + DESCANSO (CORRECTO)
+                    # ==========================
+        
                     df_conduccion = grupo_fecha[grupo_fecha["ignicion_on"]].copy()
-                    
+        
+                    numero_paradas = 0
+                    horas_pausa = 0
+                    horas_descanso = 0
+        
                     if not df_conduccion.empty:
+        
                         df_conduccion = df_conduccion.sort_values("fecha_hora").reset_index(drop=True)
+        
                         df_conduccion["velocidad_cero"] = (df_conduccion["velocidad"] == 0)
-                        df_conduccion["cambio_velocidad"] = df_conduccion["velocidad_cero"].ne(
+                        df_conduccion["grupo_vel"] = df_conduccion["velocidad_cero"].ne(
                             df_conduccion["velocidad_cero"].shift()
-                        )
-                        df_conduccion["grupo_velocidad"] = df_conduccion["cambio_velocidad"].cumsum()
-                        
-                        numero_paradas_dia = 0
-                        for _, vel_grupo in df_conduccion.groupby("grupo_velocidad"):
+                        ).cumsum()
+        
+                        for _, vel_grupo in df_conduccion.groupby("grupo_vel"):
+        
                             if vel_grupo["velocidad_cero"].iloc[0]:
+        
                                 duracion = vel_grupo["delta_horas"].sum()
+        
+                                # PARADAS
                                 if duracion >= UMBRAL_PARADA_MIN:
-                                    numero_paradas_dia += 1
-                    else:
-                        numero_paradas_dia = 0
-                    
-                    # ==========================================
-                    # UBICACIONES
-                    # ==========================================
-                    
-                    # Ubicación final del día
-                    ubicacion = ""
-                    if "Coordenadas" in df.columns:
-                        coords_validas = grupo_fecha["Coordenadas"].dropna()
-                        if not coords_validas.empty:
-                            lat, lon = parse_coords(coords_validas.iloc[-1])
-                            if not np.isnan(lat):
-                                ubicacion = coord_a_municipio(lat, lon)
-                    
-                    # Ubicación principal del día
+                                    numero_paradas += 1
+        
+                                # PAUSAS
+                                if duracion >= HORAS_MIN_PAUSA:
+                                    horas_pausa += duracion
+        
+                                # DESCANSO LARGO
+                                if duracion >= HORAS_DESCANSO_LARGO:
+                                    horas_descanso += duracion
+        
+                    # ==========================
+                    # UBICACIONES (MEJORADO)
+                    # ==========================
+        
                     ubic_principal = obtener_ubic_principal(grupo_fecha)
-                    
+        
+                    # usamos la principal como ubicación base (más robusto)
+                    ubicacion = ubic_principal
+        
                     kpis_list.append({
                         "conductor": conductor,
                         "vehiculo": vehiculo,
@@ -449,15 +444,16 @@ if files:
                         "ubic_principal": ubic_principal,
                         "inicio_jornada": inicio_jornada,
                         "fin_jornada": fin_jornada,
-                        "numero_paradas": numero_paradas_dia,
-                        "horas_trabajo": round(horas_trabajo_dia, 2),
-                        "horas_conduccion": round(horas_conduccion_dia, 2),
-                        "horas_pausa": round(horas_pausa_dia, 2),
-                        "horas_ralenti": round(horas_ralenti_dia, 2)
+                        "numero_paradas": numero_paradas,
+                        "horas_trabajo": round(horas_trabajo, 2),
+                        "horas_conduccion": round(horas_conduccion, 2),
+                        "horas_descanso": round(horas_descanso, 2),
+                        "horas_pausa": round(horas_pausa, 2),
+                        "horas_ralenti": round(horas_ralenti, 2)
                     })
-                    
+        
                 except Exception as e:
-                    st.warning(f"Error procesando fecha {fecha} para {vehiculo}: {e}")
+                    st.warning(f"Error procesando {vehiculo} - {fecha}: {e}")
             
             # ==========================================
             # AGREGAR DÍAS SIN ACTIVIDAD (Descanso)
