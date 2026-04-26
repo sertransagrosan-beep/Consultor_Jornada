@@ -66,7 +66,7 @@ UMBRAL_CONDUCCION_HORAS = UMBRAL_MIN_CONDUCCION / 60
 st.sidebar.markdown("---")
 st.sidebar.info(f"📌 **Resumen de configuración:**\n\n"
                 f"• Jornada máxima: {HORAS_MAX_JORNADA} horas\n"
-                f"• Descanso largo: {HORAS_DESCANSO_LARGO} horas\n"
+                f"• Descanso largo mínimo: {HORAS_DESCANSO_LARGO} horas\n"
                 f"• Pausa mínima: {MIN_PAUSA} minutos\n"
                 f"• Parada mínima: {MIN_PARADA} minutos\n"
                 f"• Conducción mínima: {UMBRAL_MIN_CONDUCCION} minutos")
@@ -356,7 +356,7 @@ if files:
         bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
 
     # ==============================
-    # KPIs - FORMULACIÓN ORIGINAL (basada en bloques)
+    # KPIs - FORMULACIÓN ORIGINAL (con sliders conectados)
     # ==============================
 
     kpis_list = []
@@ -382,6 +382,13 @@ if files:
 
                 inicio = df_on["fecha_hora"].min()
                 fin = df_on["fecha_hora"].max()
+                
+                # ==========================================
+                # APLICAR FILTRO DE HORAS MÁXIMAS DE JORNADA
+                # ==========================================
+                duracion_jornada = (fin - inicio).total_seconds() / 3600
+                if duracion_jornada > HORAS_MAX_JORNADA:
+                    continue  # Saltar jornadas que exceden el máximo permitido
 
                 # ==========================================
                 # FÓRMULAS ORIGINALES
@@ -408,7 +415,7 @@ if files:
                         if dur >= HORAS_MIN_PAUSA:
                             horas_pausa += dur
 
-                # DESCANSO REAL (según lógica original)
+                # DESCANSO REAL (usando HORAS_DESCANSO_LARGO como umbral mínimo)
                 horas_descanso = 0
                 for _, b in bloques_v.iterrows():
 
@@ -419,7 +426,10 @@ if files:
                     fin_r = min(b["fin"], fin_d)
 
                     if ini_r < fin_r and b["estado"] == "apagado":
-                        horas_descanso += (fin_r - ini_r).total_seconds() / 3600
+                        descanso_parcial = (fin_r - ini_r).total_seconds() / 3600
+                        # Solo contar si cumple el descanso largo mínimo
+                        if descanso_parcial >= HORAS_DESCANSO_LARGO:
+                            horas_descanso += descanso_parcial
 
                 # ==========================================
                 # UBICACIONES
@@ -442,6 +452,7 @@ if files:
                     "origen": "",
                     "destino": "",
                     "ubicación": ubicacion,
+                    "ubic_principal": ubic_principal,
                     "inicio_jornada": inicio,
                     "fin_jornada": fin,
                     "numero_paradas": numero_paradas,
@@ -449,14 +460,13 @@ if files:
                     "horas_conduccion": round(horas_conduccion, 2),
                     "horas_descanso": round(horas_descanso, 2),
                     "horas_pausa": round(horas_pausa, 2),
-                    "horas_ralenti": round(horas_ralenti, 2),
-                    "ubic_principal": ubic_principal
+                    "horas_ralenti": round(horas_ralenti, 2)
                 })
 
     # Crear DataFrame de KPIs
     kpis = pd.DataFrame(kpis_list).round(2)
 
-    # Filtrar jornadas con conducción mínima (opcional, respeta el parámetro)
+    # Filtrar jornadas con conducción mínima
     if not kpis.empty:
         kpis = kpis[kpis["horas_conduccion"] >= UMBRAL_CONDUCCION_HORAS]
 
