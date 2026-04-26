@@ -537,10 +537,9 @@ if files:
         
         # Reordenar columnas
         columnas_orden = [
-            "conductor", "vehiculo", "fecha", 
-            "inicio_jornada", "fin_jornada",
-            "horas_trabajo", "horas_conduccion", "horas_pausa", "horas_ralenti", "horas_descanso",
-            "numero_paradas", "ubicación", "ubic_principal", "origen", "destino"
+            "conductor", "vehiculo", "fecha", "origen", "destino", "ubicación",
+            "inicio_jornada", "fin_jornada", "numero_paradas", "horas_trabajo", "horas_conduccion", "horas_descanso", "horas_pausa", 
+            "horas_ralenti", "ubic_principal"
         ]
         kpis = kpis[[col for col in columnas_orden if col in kpis.columns]]
         
