@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import io
 import re
+import zipfile
+from datetime import datetime
 
 st.set_page_config(page_title="Jornada Laboral Conductores", layout="wide")
 st.title("📊 Jornada Laboral Conductores")
@@ -629,92 +631,157 @@ if files:
         else:
             st.warning("⚠️ No se encontraron jornadas con conducción efectiva")
 
-        # ==============================
-        # EXPORTAR
-        # ==============================
-        
-        buffer = io.BytesIO()
-        
-        # Obtener nombre del conductor y placa para los nombres de hojas
-        if not kpis.empty:
-            # Obtener el primer conductor no vacío
-            conductores_validos = kpis["conductor"].dropna().unique()
-            nombre_conductor = limpiar_texto(conductores_validos[0]) if len(conductores_validos) > 0 else "SinConductor"
-            
-            # Obtener la primera placa no vacía
-            placas_validas = kpis["vehiculo"].dropna().unique()
-            placa_vehiculo = limpiar_texto(placas_validas[0]) if len(placas_validas) > 0 else "SinPlaca"
-        else:
-            nombre_conductor = "SinConductor"
-            placa_vehiculo = "SinPlaca"
-        
-        # Crear nombres de hojas
-        nombre_hoja_resumen = f"Resumen {nombre_conductor} {placa_vehiculo}"
-        nombre_hoja_bloques = f"Bloques {nombre_conductor} {placa_vehiculo}"
-        
-        # Limitar nombres de hojas a 31 caracteres (límite de Excel)
-        if len(nombre_hoja_resumen) > 31:
-            nombre_hoja_resumen = nombre_hoja_resumen[:28] + "..."
-        if len(nombre_hoja_bloques) > 31:
-            nombre_hoja_bloques = nombre_hoja_bloques[:28] + "..."
-        
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            kpis.to_excel(writer, sheet_name=nombre_hoja_resumen, index=False)
-            bloques.to_excel(writer, sheet_name=nombre_hoja_bloques, index=False)
-        
-            ws_resumen = writer.book[nombre_hoja_resumen]
-            ws_bloques = writer.book[nombre_hoja_bloques]
-        
-            def auto_ajustar(ws):
-                for col in ws.columns:
-                    max_length = 0
-                    col_letter = col[0].column_letter
-                    for cell in col:
-                        if cell.value:
-                            max_length = max(max_length, len(str(cell.value)))
-                    ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
-        
-            auto_ajustar(ws_resumen)
-            auto_ajustar(ws_bloques)
-        
-        buffer.seek(0)
-       
-        # ==============================
-        # NOMBRE ARCHIVO
-        # ==============================
-        
-        if not kpis.empty:
-            conductores = kpis["conductor"].dropna().unique()
-            conductor_nombre = limpiar_texto(conductores[0]) if len(conductores) == 1 else "MULTIPLE_CONDUCTOR"
-        
-            vehiculos = kpis["vehiculo"].dropna().unique()
-            vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
-        
-            fechas = pd.to_datetime(kpis["fecha"])
-            fecha_min = fechas.min()
-            fecha_max = fechas.max()
-        
-            meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
-                     5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
-                     9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-        
-            mes_nombre = meses[fecha_min.month]
-        
-            if fecha_min == fecha_max:
-                fecha_str = mes_nombre
-            else:
-                fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
-        
-            if vehiculo:
-                nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
-            else:
-                nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
-        else:
-            nombre_archivo = "reporte.xlsx"
-        
-        st.download_button(
-            "📥 Descargar Excel", 
-            data=buffer, 
-            file_name=nombre_archivo,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+
+                # ==============================
+                # EXPORTAR - UN ARCHIVO POR CONDUCTOR
+                # ==============================
+                
+                if kpis.empty:
+                    st.warning("⚠️ No hay datos para exportar")
+                    st.stop()
+                
+                # Obtener lista de conductores únicos
+                conductores_unicos = kpis["conductor"].dropna().unique()
+                
+                st.info(f"📊 Se generarán {len(conductores_unicos)} archivo(s) Excel (uno por conductor)")
+                
+                # Crear un buffer para cada conductor
+                archivos_generados = []
+                
+                for conductor_actual in conductores_unicos:
+                    
+                    # Filtrar KPIs para este conductor
+                    kpis_conductor = kpis[kpis["conductor"] == conductor_actual].copy()
+                    
+                    # Filtrar bloques para este conductor (usando el vehículo asociado)
+                    vehiculos_conductor = kpis_conductor["vehiculo"].dropna().unique()
+                    bloques_conductor = bloques[bloques["vehiculo"].isin(vehiculos_conductor)].copy()
+                    
+                    if kpis_conductor.empty:
+                        continue
+                    
+                    # Obtener nombre del conductor limpio para el archivo
+                    nombre_conductor_limpio = limpiar_texto(conductor_actual)
+                    
+                    # Obtener placa del vehículo (pueden ser múltiples, usamos la primera)
+                    placa_vehiculo = limpiar_texto(vehiculos_conductor[0]) if len(vehiculos_conductor) > 0 else "SinPlaca"
+                    
+                    # Crear nombres de hojas (con límite de 31 caracteres)
+                    nombre_hoja_resumen = f"Resumen {nombre_conductor_limpio} {placa_vehiculo}"
+                    nombre_hoja_bloques = f"Bloques {nombre_conductor_limpio} {placa_vehiculo}"
+                    
+                    # Limitar nombres de hojas a 31 caracteres (límite de Excel)
+                    if len(nombre_hoja_resumen) > 31:
+                        nombre_hoja_resumen = nombre_hoja_resumen[:28] + "..."
+                    if len(nombre_hoja_bloques) > 31:
+                        nombre_hoja_bloques = nombre_hoja_bloques[:28] + "..."
+                    
+                    # Crear buffer para este conductor
+                    buffer_conductor = io.BytesIO()
+                    
+                    with pd.ExcelWriter(buffer_conductor, engine="openpyxl") as writer:
+                        kpis_conductor.to_excel(writer, sheet_name=nombre_hoja_resumen, index=False)
+                        bloques_conductor.to_excel(writer, sheet_name=nombre_hoja_bloques, index=False)
+                        
+                        ws_resumen = writer.book[nombre_hoja_resumen]
+                        ws_bloques = writer.book[nombre_hoja_bloques]
+                        
+                        def auto_ajustar(ws):
+                            for col in ws.columns:
+                                max_length = 0
+                                col_letter = col[0].column_letter
+                                for cell in col:
+                                    if cell.value:
+                                        max_length = max(max_length, len(str(cell.value)))
+                                ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
+                        
+                        auto_ajustar(ws_resumen)
+                        auto_ajustar(ws_bloques)
+                    
+                    buffer_conductor.seek(0)
+                    
+                    # ==============================
+                    # NOMBRE DEL ARCHIVO
+                    # ==============================
+                    
+                    fechas = pd.to_datetime(kpis_conductor["fecha"])
+                    fecha_min = fechas.min()
+                    fecha_max = fechas.max()
+                    
+                    meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+                             5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+                             9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+                    
+                    mes_nombre = meses[fecha_min.month]
+                    
+                    if fecha_min == fecha_max:
+                        fecha_str = mes_nombre
+                    else:
+                        fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
+                    
+                    if placa_vehiculo != "SinPlaca":
+                        nombre_archivo = f"{nombre_conductor_limpio} {placa_vehiculo} {fecha_str}.xlsx"
+                    else:
+                        nombre_archivo = f"{nombre_conductor_limpio} {fecha_str}.xlsx"
+                    
+                    archivos_generados.append({
+                        "nombre": nombre_archivo,
+                        "buffer": buffer_conductor,
+                        "conductor": conductor_actual,
+                        "vehiculo": placa_vehiculo
+                    })
+                
+                # ==============================
+                # MOSTRAR BOTONES DE DESCARGA
+                # ==============================
+                
+                st.subheader("📥 Descargar archivos")
+                
+                if len(archivos_generados) == 1:
+                    # Un solo conductor: mostrar un botón
+                    archivo = archivos_generados[0]
+                    st.download_button(
+                        label=f"📥 Descargar Excel - {archivo['conductor']} ({archivo['vehiculo']})",
+                        data=archivo["buffer"],
+                        file_name=archivo["nombre"],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    # Múltiples conductores: mostrar un botón por cada uno
+                    st.write(f"**{len(archivos_generados)} archivos disponibles:**")
+                    
+                    # Crear columnas para organizar los botones
+                    cols = st.columns(min(len(archivos_generados), 3))
+                    
+                    for idx, archivo in enumerate(archivos_generados):
+                        col_idx = idx % 3
+                        with cols[col_idx]:
+                            st.download_button(
+                                label=f"📄 {archivo['conductor']} ({archivo['vehiculo']})",
+                                data=archivo["buffer"],
+                                file_name=archivo["nombre"],
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    
+                    # Opción adicional: botón para descargar todos en un ZIP (requiere zipfile)
+                    st.markdown("---")
+                    with st.expander("📦 Descargar todos los archivos en un ZIP"):
+                        import zipfile
+                        from datetime import datetime
+                        
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for archivo in archivos_generados:
+                                archivo["buffer"].seek(0)
+                                zip_file.writestr(archivo["nombre"], archivo["buffer"].getvalue())
+                        
+                        zip_buffer.seek(0)
+                        
+                        st.download_button(
+                            label="📦 Descargar TODOS los archivos (ZIP)",
+                            data=zip_buffer,
+                            file_name=f"reportes_conductores_{datetime.now().strftime('%Y%m%d')}.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
