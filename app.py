@@ -623,78 +623,98 @@ if files:
         else:
             st.warning("⚠️ No se encontraron jornadas con conducción efectiva")
 
-    # ==============================
-    # EXPORTAR
-    # ==============================
-    
-    buffer = io.BytesIO()
-    
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        kpis.to_excel(writer, sheet_name="Resumen", index=False)
-        bloques.to_excel(writer, sheet_name="Bloques", index=False)
-    
-        ws_resumen = writer.book["Resumen"]
-        ws_bloques = writer.book["Bloques"]
-    
-        def auto_ajustar(ws):
-            for col in ws.columns:
-                max_length = 0
-                col_letter = col[0].column_letter
-                for cell in col:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
-    
-        auto_ajustar(ws_resumen)
-        auto_ajustar(ws_bloques)
-    
-    buffer.seek(0)
-   
-    # ==============================
-    # NOMBRE ARCHIVO
-    # ==============================
-    
-    def limpiar_texto(txt):
-        txt = str(txt).strip()
-        txt = " ".join(txt.split())
-        txt = re.sub(r'[\\/*?:"<>|]', "", txt)
-        return txt
-    
-    if not kpis.empty:
-        conductores = kpis["conductor"].dropna().unique()
-        conductor_nombre = limpiar_texto(conductores[0]) if len(conductores) == 1 else "MULTIPLE_CONDUCTOR"
-    
-        vehiculos = kpis["vehiculo"].dropna().unique()
-        vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
-    
-        fechas = pd.to_datetime(kpis["fecha"])
-        fecha_min = fechas.min()
-        fecha_max = fechas.max()
-    
-        meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
-                 5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
-                 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-    
-        mes_nombre = meses[fecha_min.month]
-    
-        if fecha_min == fecha_max:
-            fecha_str = mes_nombre
+        # ==============================
+        # EXPORTAR
+        # ==============================
+        
+        buffer = io.BytesIO()
+        
+        # Obtener nombre del conductor y placa para los nombres de hojas
+        if not kpis.empty:
+            # Obtener el primer conductor no vacío
+            conductores_validos = kpis["conductor"].dropna().unique()
+            nombre_conductor = limpiar_texto(conductores_validos[0]) if len(conductores_validos) > 0 else "SinConductor"
+            
+            # Obtener la primera placa no vacía
+            placas_validas = kpis["vehiculo"].dropna().unique()
+            placa_vehiculo = limpiar_texto(placas_validas[0]) if len(placas_validas) > 0 else "SinPlaca"
         else:
-            fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
-    
-        if vehiculo:
-            nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
+            nombre_conductor = "SinConductor"
+            placa_vehiculo = "SinPlaca"
+        
+        # Crear nombres de hojas
+        nombre_hoja_resumen = f"Resumen {nombre_conductor} {placa_vehiculo}"
+        nombre_hoja_bloques = f"Bloques {nombre_conductor} {placa_vehiculo}"
+        
+        # Limitar nombres de hojas a 31 caracteres (límite de Excel)
+        if len(nombre_hoja_resumen) > 31:
+            nombre_hoja_resumen = nombre_hoja_resumen[:28] + "..."
+        if len(nombre_hoja_bloques) > 31:
+            nombre_hoja_bloques = nombre_hoja_bloques[:28] + "..."
+        
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            kpis.to_excel(writer, sheet_name=nombre_hoja_resumen, index=False)
+            bloques.to_excel(writer, sheet_name=nombre_hoja_bloques, index=False)
+        
+            ws_resumen = writer.book[nombre_hoja_resumen]
+            ws_bloques = writer.book[nombre_hoja_bloques]
+        
+            def auto_ajustar(ws):
+                for col in ws.columns:
+                    max_length = 0
+                    col_letter = col[0].column_letter
+                    for cell in col:
+                        if cell.value:
+                            max_length = max(max_length, len(str(cell.value)))
+                    ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
+        
+            auto_ajustar(ws_resumen)
+            auto_ajustar(ws_bloques)
+        
+        buffer.seek(0)
+       
+        # ==============================
+        # NOMBRE ARCHIVO
+        # ==============================
+        
+        def limpiar_texto(txt):
+            txt = str(txt).strip()
+            txt = " ".join(txt.split())
+            txt = re.sub(r'[\\/*?:"<>|]', "", txt)
+            return txt
+        
+        if not kpis.empty:
+            conductores = kpis["conductor"].dropna().unique()
+            conductor_nombre = limpiar_texto(conductores[0]) if len(conductores) == 1 else "MULTIPLE_CONDUCTOR"
+        
+            vehiculos = kpis["vehiculo"].dropna().unique()
+            vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
+        
+            fechas = pd.to_datetime(kpis["fecha"])
+            fecha_min = fechas.min()
+            fecha_max = fechas.max()
+        
+            meses = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+                     5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+                     9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+        
+            mes_nombre = meses[fecha_min.month]
+        
+            if fecha_min == fecha_max:
+                fecha_str = mes_nombre
+            else:
+                fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
+        
+            if vehiculo:
+                nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
+            else:
+                nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
         else:
-            nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
-    else:
-        nombre_archivo = "reporte.xlsx"
-    
-    st.download_button(
-        "📥 Descargar Excel", 
-        data=buffer, 
-        file_name=nombre_archivo,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-else:
-    st.info("👈 Sube archivos CSV o Excel para comenzar el análisis")
+            nombre_archivo = "reporte.xlsx"
+        
+        st.download_button(
+            "📥 Descargar Excel", 
+            data=buffer, 
+            file_name=nombre_archivo,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
