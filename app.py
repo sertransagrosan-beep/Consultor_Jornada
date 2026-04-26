@@ -15,18 +15,18 @@ st.sidebar.header("⚙️ Parámetros de Configuración")
 
 HORAS_MAX_JORNADA = st.sidebar.slider(
     "Horas máximas jornada", 
-    min_value=4.0, 
-    max_value=16.0, 
-    value=8.0, 
+    min_value=2.0,
+    max_value=24.0,
+    value=8.0,
     step=0.5,
     help="Duración máxima permitida de una jornada laboral"
 )
 
 HORAS_DESCANSO_LARGO = st.sidebar.slider(
     "Horas descanso largo", 
-    min_value=2.0, 
-    max_value=12.0, 
-    value=4.0, 
+    min_value=2.0,
+    max_value=12.0,
+    value=4.0,
     step=0.5,
     help="Tiempo mínimo para considerar descanso entre jornadas"
 )
@@ -34,7 +34,7 @@ HORAS_DESCANSO_LARGO = st.sidebar.slider(
 MIN_PAUSA = st.sidebar.slider(
     "Pausa mínima (minutos)", 
     min_value=5, 
-    max_value=60, 
+    max_value=120,
     value=34, 
     step=1,
     help="Duración mínima para contar como pausa dentro de la jornada"
@@ -52,8 +52,8 @@ MIN_PARADA = st.sidebar.slider(
 UMBRAL_MIN_CONDUCCION = st.sidebar.slider(
     "Conducción mínima por jornada (minutos)", 
     min_value=1, 
-    max_value=30, 
-    value=6, 
+    max_value=60,
+    value=17, 
     step=1,
     help="Tiempo mínimo de conducción para considerar una jornada válida (evita jornadas de 0 horas)"
 )
