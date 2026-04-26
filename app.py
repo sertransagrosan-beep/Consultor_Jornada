@@ -13,7 +13,7 @@ st.title("📊 Jornada Laboral Conductores")
 
 st.sidebar.header("⚙️ Parámetros")
 
-HORAS_DESCANSO_LARGO = st.sidebar.slider("Descanso largo (h)", 2.0, 12.0, 4.0)
+HORAS_DESCANSO_LARGO = st.sidebar.slider("Descanso largo (horas)", 2.0, 12.0, 4.0, 0.5)
 MIN_PAUSA = st.sidebar.slider("Pausa mínima (min)", 5, 60, 34)
 MIN_PARADA = st.sidebar.slider("Parada mínima (min)", 1, 30, 17)
 
@@ -32,17 +32,16 @@ def cargar_municipios():
     return df.dropna()
 
 municipios_df = cargar_municipios()
-st.success(f"✅ {len(municipios_df)} municipios cargados")
+st.success(f"✅ Cargados {len(municipios_df)} municipios colombianos")
 
 def coord_a_municipio(lat, lon):
-    if pd.isna(lat):
-        return ""
+    if pd.isna(lat): return ""
     dist = (municipios_df["Latitud"] - lat)**2 + (municipios_df["Longitud"] - lon)**2
     row = municipios_df.loc[dist.idxmin()]
     return f"{row['Municipio']}, {row['Departamento']}"
 
 # ==============================
-# HELPERS
+# UTILIDADES
 # ==============================
 
 def leer_archivo(file):
@@ -51,48 +50,48 @@ def leer_archivo(file):
             df = pd.read_excel(file)
         else:
             try:
-                df = pd.read_csv(file, sep=";", encoding="utf-8")
+                df = pd.read_csv(file, sep=";")
             except:
                 file.seek(0)
                 df = pd.read_csv(file, sep=None, engine="python")
         df.columns = df.columns.astype(str).str.strip()
-        return df
+        return df.loc[:, ~df.columns.str.contains("^Unnamed")]
     except:
         return None
 
 def parse_coords(coord):
     try:
-        lat, lon = map(float, str(coord).replace(";", ",").split(",")[:2])
+        lat, lon = map(float, str(coord).replace(";", ",").split(","))
         return lat, lon
     except:
         return np.nan, np.nan
 
 # ==============================
-# CARGA
+# UPLOAD
 # ==============================
 
 files = st.file_uploader("📁 Sube archivos", accept_multiple_files=True)
 
 if files:
 
-    dfs = []
+    lista_df = []
 
     for file in files:
-        df = leer_archivo(file)
-        if df is None or df.empty:
+        df_temp = leer_archivo(file)
+        if df_temp is None or df_temp.empty:
             continue
 
-        df = df.rename(columns={
+        df_temp = df_temp.rename(columns={
             "Fecha y Hora": "fecha_hora",
             "Velocidad": "velocidad",
             "Ignicion*": "ignicion",
             "Conductor": "conductor"
         })
 
-        df["vehiculo"] = file.name[:6].upper()
-        dfs.append(df)
+        df_temp["vehiculo"] = file.name[:6].upper()
+        lista_df.append(df_temp)
 
-    df = pd.concat(dfs, ignore_index=True)
+    df = pd.concat(lista_df, ignore_index=True)
 
     # ==============================
     # LIMPIEZA
@@ -110,27 +109,18 @@ if files:
     )
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
 
-    df = df.sort_values(["vehiculo", "fecha_hora"])
+    df = df.sort_values(["vehiculo", "fecha_hora"]).reset_index(drop=True)
     df["fecha"] = df["fecha_hora"].dt.date
 
-    # ==============================
-    # ESTADOS
-    # ==============================
-
-    df["estado"] = np.where(
-        (df["ignicion_on"]) & (df["velocidad"] > 0),
-        "conduciendo",
-        np.where(df["ignicion_on"], "ralenti", "apagado")
+    df["estado"] = df.apply(
+        lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"] > 0
+        else "ralenti" if r["ignicion_on"]
+        else "apagado",
+        axis=1
     )
 
-    # ==============================
-    # DELTAS
-    # ==============================
-
-    df["fecha_sig"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
-    df["delta_horas"] = (
-        df["fecha_sig"] - df["fecha_hora"]
-    ).dt.total_seconds() / 3600
+    df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
+    df["delta_horas"] = (df["fecha_siguiente"] - df["fecha_hora"]).dt.total_seconds() / 3600
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
     # ==============================
@@ -149,91 +139,110 @@ if files:
     bloques = bloques.reset_index()
 
     # ==============================
-    # KPIs (CORRECTO)
+    # KPIs
     # ==============================
 
     kpis_list = []
+    todas_fechas = sorted(df["fecha"].unique())
 
-    for (vehiculo, fecha), grupo in df.groupby(["vehiculo", "fecha"]):
+    for vehiculo in df["vehiculo"].unique():
 
-        df_encendido = grupo[grupo["ignicion_on"]]
-        if df_encendido.empty:
-            continue
-
-        conductor = grupo["conductor"].dropna().iloc[0] if "conductor" in grupo else ""
-
-        inicio_jornada = df_encendido["fecha_hora"].min()
-        fin_jornada = df_encendido["fecha_hora"].max()
-
-        horas_conduccion = grupo.loc[grupo["estado"]=="conduciendo","delta_horas"].sum()
-        horas_ralenti = grupo.loc[grupo["estado"]=="ralenti","delta_horas"].sum()
-        horas_trabajo = horas_conduccion + horas_ralenti
-
+        df_v = df[df["vehiculo"] == vehiculo]
         bloques_v = bloques[bloques["vehiculo"] == vehiculo]
 
-        numero_paradas = 0
-        horas_descanso = 0
-        horas_pausa = 0
+        for fecha in todas_fechas:
 
-        for _, b in bloques_v.iterrows():
+            g = df_v[df_v["fecha"] == fecha]
+            if g.empty:
+                continue
 
-            inicio = b["inicio"]
-            fin = b["fin"]
+            df_on = g[g["ignicion_on"]]
+            if df_on.empty:
+                continue
 
-            inicio_dia = pd.Timestamp(fecha)
-            fin_dia = inicio_dia + pd.Timedelta(days=1)
+            conductor = g["conductor"].dropna().iloc[0] if not g["conductor"].dropna().empty else "Desconocido"
 
-            inicio_real = max(inicio, inicio_dia)
-            fin_real = min(fin, fin_dia)
+            inicio = df_on["fecha_hora"].min()
+            fin = df_on["fecha_hora"].max()
 
-            if inicio_real < fin_real:
+            h_conduccion = g[g["estado"] == "conduciendo"]["delta_horas"].sum()
+            h_ralenti = g[g["estado"] == "ralenti"]["delta_horas"].sum()
+            h_trabajo = h_conduccion + h_ralenti
 
-                horas = (fin_real - inicio_real).total_seconds() / 3600
+            # PARADAS / PAUSAS
+            df_mov = df_on.copy().sort_values("fecha_hora")
+            df_mov["vel0"] = df_mov["velocidad"] == 0
+            df_mov["grp"] = df_mov["vel0"].ne(df_mov["vel0"].shift()).cumsum()
 
-                # PARADAS
-                if b["estado"] in ["ralenti","apagado"] and horas >= UMBRAL_PARADA_MIN:
-                    numero_paradas += 1
+            paradas = 0
+            pausas = 0
 
-                # DESCANSO vs PAUSA (EXCLUYENTE)
-                if b["estado"] == "apagado":
-                    if horas >= HORAS_DESCANSO_LARGO:
-                        horas_descanso += horas
-                    elif horas >= HORAS_MIN_PAUSA:
-                        horas_pausa += horas
+            for _, gg in df_mov.groupby("grp"):
+                if gg["vel0"].iloc[0]:
+                    dur = gg["delta_horas"].sum()
+                    if dur >= UMBRAL_PARADA_MIN:
+                        paradas += 1
+                    if dur >= HORAS_MIN_PAUSA:
+                        pausas += dur
 
-        # UBICACIÓN
-        lat, lon = parse_coords(grupo["Coordenadas"].dropna().iloc[-1] if "Coordenadas" in grupo else "")
-        ubicacion = coord_a_municipio(lat, lon)
+            # DESCANSO REAL
+            descanso = 0
+            for _, b in bloques_v.iterrows():
 
-        kpis_list.append({
-            "conductor": conductor,
-            "vehiculo": vehiculo,
-            "fecha": fecha,
-            "ubicación": ubicacion,
-            "inicio_jornada": inicio_jornada,
-            "fin_jornada": fin_jornada,
-            "numero_paradas": numero_paradas,
-            "horas_trabajo": round(horas_trabajo,2),
-            "horas_conduccion": round(horas_conduccion,2),
-            "horas_descanso": round(horas_descanso,2),
-            "horas_pausa": round(horas_pausa,2),
-            "horas_ralenti": round(horas_ralenti,2)
-        })
+                ini_d = pd.Timestamp(fecha)
+                fin_d = ini_d + pd.Timedelta(days=1)
+
+                ini_r = max(b["inicio"], ini_d)
+                fin_r = min(b["fin"], fin_d)
+
+                if ini_r < fin_r and b["estado"] == "apagado":
+                    descanso += (fin_r - ini_r).total_seconds() / 3600
+
+            ubic = ""
+            try:
+                lat, lon = parse_coords(g["Coordenadas"].dropna().iloc[-1])
+                ubic = coord_a_municipio(lat, lon)
+            except:
+                pass
+
+            kpis_list.append({
+                "conductor": conductor,
+                "vehiculo": vehiculo,
+                "fecha": fecha,
+                "origen": "",
+                "destino": "",
+                "ubicación": ubic,
+                "inicio_jornada": inicio,
+                "fin_jornada": fin,
+                "numero_paradas": paradas,
+                "horas_trabajo": round(h_trabajo, 2),
+                "horas_conduccion": round(h_conduccion, 2),
+                "horas_descanso": round(descanso, 2),
+                "horas_pausa": round(pausas, 2),
+                "horas_ralenti": round(h_ralenti, 2),
+                "ubic_principal": ubic
+            })
 
     kpis = pd.DataFrame(kpis_list)
 
-    # ==============================
-    # FORMATO FINAL
-    # ==============================
+    kpis["fecha"] = pd.to_datetime(kpis["fecha"]).dt.date
+    kpis = kpis.sort_values(["vehiculo", "fecha"])
 
-    if not kpis.empty:
+    mask = kpis["horas_trabajo"] > 0
 
-        kpis["fecha"] = pd.to_datetime(kpis["fecha"], errors="coerce")
+    kpis.loc[mask, "inicio_jornada"] = pd.to_datetime(kpis.loc[mask, "inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+    kpis.loc[mask, "fin_jornada"] = pd.to_datetime(kpis.loc[mask, "fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
-        kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
-        kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+    columnas = [
+        "conductor","vehiculo","fecha","origen","destino","ubicación",
+        "inicio_jornada","fin_jornada","numero_paradas",
+        "horas_trabajo","horas_conduccion","horas_descanso",
+        "horas_pausa","horas_ralenti","ubic_principal"
+    ]
 
-        st.dataframe(kpis, use_container_width=True)
+    kpis = kpis[columnas]
+
+    st.dataframe(kpis, use_container_width=True)
 
     # ==============================
     # EXPORTAR
@@ -247,8 +256,7 @@ if files:
 
     buffer.seek(0)
 
-    st.download_button(
-        "📥 Descargar Excel",
-        data=buffer,
-        file_name="reporte_jornadas.xlsx"
-    )
+    st.download_button("📥 Descargar Excel", buffer, "reporte_jornada.xlsx")
+
+else:
+    st.info("👈 Sube archivos para comenzar")
